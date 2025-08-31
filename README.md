@@ -11,17 +11,3 @@
 🤫 Respostas Efêmeras: Todas as interações e resultados são enviados como mensagens privadas (efêmeras), mantendo os canais do servidor limpos.
 
 🌍 Bot Global: Funciona em qualquer servidor em que for adicionado, sem necessidade de configuração específica por guilda.
-
-🛠️ Tecnologias Utilizadas
-: A linguagem de programação principal.
-
-: A biblioteca principal para interagir com a API do Discord.
-
-: Para realizar as requisições HTTP e obter o conteúdo das páginas web.
-
-: Para fazer o parsing do HTML e extrair as informações dos cursos (web scraping).
-
-: Para o armazenamento persistente da lista de cursos salvos por cada usuário em um banco de dados local.
-
-🚀 Instalação e Configuração
-Siga os passos abaixo para hospedar e executar sua própria instância do CursoBot.
