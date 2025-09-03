@@ -133,7 +133,6 @@ class CategoriaTIView(discord.ui.View):
         self.add_item(CategoriaSelect())
 
 # --- WEB SCRAPING E BUSCAS (Sem alterações) ---
-# ... (todo o código de web scraping continua aqui, idêntico ao anterior) ...
 def pegar_cursos(url: str, base_url: str, filter_keyword: str):
     cursos = []
     try:
@@ -203,13 +202,11 @@ async def on_ready():
     bot.add_view(CursoView(course_title="", course_url="")) 
     bot.add_view(CategoriaTIView())
     try:
-        # Sincroniza os comandos globalmente
-        synced = await bot.tree.sync() # <-- ALTERAÇÃO AQUI
+        synced = await bot.tree.sync()
         print(f"Sincronizados {len(synced)} comandos globalmente.")
     except Exception as e:
         print(f"Erro ao sincronizar comandos: {e}")
 
-# Note que o "guild=..." foi removido de todos os comandos abaixo
 @bot.tree.command(name="explorar_ti", description="Navegue por categorias e encontre cursos de TI.")
 async def explorar_ti(interaction: discord.Interaction):
     view = CategoriaTIView()
@@ -219,7 +216,6 @@ async def explorar_ti(interaction: discord.Interaction):
 @app_commands.describe(termo="O que você quer aprender? (Ex: Python, AWS, Big Data, CCNA, Java)")
 async def pesquisar_cursos(interaction: discord.Interaction, termo: str):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    # ... (lógica do comando idêntica) ...
     resultados = pesquisar_cursos_online(termo)
     if not resultados:
         await interaction.followup.send(f"Nenhum curso encontrado para o termo '{termo}'.", ephemeral=True)
@@ -240,7 +236,6 @@ async def pesquisar_cursos(interaction: discord.Interaction, termo: str):
 @bot.tree.command(name="cursos_pentest", description="Busca cursos de Pentest e Hacking Ético.")
 async def cursos_pentest(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
-    # ... (lógica do comando idêntica) ...
     resultados_especializados = pesquisar_cursos_pentest_especializados()
     resultados_gerais = pesquisar_cursos_online("pentest")
     resultados_hacking = pesquisar_cursos_online("ethical hacking")
@@ -262,6 +257,52 @@ async def cursos_pentest(interaction: discord.Interaction):
         view = CursoView(course_title=titulo, course_url=url)
         await interaction.followup.send(embed=embed_curso, view=view, ephemeral=True)
 
+# --- NOVO COMANDO DE AJUDA ---
+@bot.tree.command(name="ajuda", description="Exibe informações de ajuda sobre como usar o bot e seus comandos.")
+async def ajuda(interaction: discord.Interaction):
+    """Mostra uma mensagem de ajuda com todos os comandos disponíveis."""
+    
+    embed_ajuda = discord.Embed(
+        title="🤖 Ajuda do Bot de Cursos de TI",
+        description="Olá! Eu sou seu assistente para encontrar cursos de Tecnologia da Informação em diversas plataformas online.\n\nVeja abaixo como usar meus comandos:",
+        color=discord.Color.purple() # Uma cor diferente para destacar a ajuda
+    )
+    
+    embed_ajuda.add_field(
+        name="`/explorar_ti`", 
+        value="Abre um menu interativo para você escolher uma área de TI (Programação, Redes, Cloud, etc.) e ver os cursos disponíveis.", 
+        inline=False
+    )
+    
+    embed_ajuda.add_field(
+        name="`/pesquisar_cursos [termo]`", 
+        value="Busca diretamente por um assunto específico. \n*Exemplo: `/pesquisar_cursos termo:Python`*", 
+        inline=False
+    )
+    
+    embed_ajuda.add_field(
+        name="`/cursos_pentest`", 
+        value="Realiza uma busca focada em cursos de Segurança da Informação, Pentest e Hacking Ético.", 
+        inline=False
+    )
+    
+    embed_ajuda.add_field(
+        name="`/meus_cursos`", 
+        value="Mostra a sua lista pessoal de cursos que você salvou usando o botão.", 
+        inline=False
+    )
+    
+    embed_ajuda.add_field(
+        name="✅ Botão 'Salvar na minha lista'", 
+        value="Este botão aparece abaixo de cada curso encontrado em uma busca. Clique nele para adicionar um curso à sua lista pessoal, que pode ser vista com `/meus_cursos`.", 
+        inline=False
+    )
+    
+    embed_ajuda.set_footer(text="Espero que ajude você a encontrar o curso perfeito!")
+    
+    await interaction.response.send_message(embed=embed_ajuda, ephemeral=True)
+
+
 @bot.tree.command(name="meus_cursos", description="Mostra todos os cursos que você salvou.")
 async def meus_cursos(interaction: discord.Interaction):
     user_id = interaction.user.id
@@ -282,7 +323,7 @@ async def meus_cursos(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --- INICIA O BOT ---
-if TOKEN == "SEU_NOVO_TOKEN_SEGURO_VAI_AQUI":
-    print("ERRO CRÍTICO: Por favor, configure seu token do Discord!")
+if TOKEN == "": # Alterado para verificar se está vazio
+    print("ERRO CRÍTICO: Por favor, configure seu token do Discord em uma variável de ambiente chamada DISCORD_TOKEN!")
 else:
     bot.run(TOKEN)
