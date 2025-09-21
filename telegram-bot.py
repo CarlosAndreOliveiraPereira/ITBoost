@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 
 import os
 import sqlite3
@@ -13,7 +14,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from telegram.constants import ParseMode
 
 # --- CONFIGURAÇÕES ---
-TOKEN = os.getenv("")
+TOKEN = os.getenv("","")
 
 # --- ARQUIVOS DE DADOS ---
 DB_FILE = "cursos_usuarios.db"
