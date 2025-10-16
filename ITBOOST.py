@@ -1,329 +1,257 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
-import requests
-from bs4 import BeautifulSoup
 import os
 import sqlite3
+import asyncio
+import aiohttp
+from bs4 import BeautifulSoup
 import urllib.parse
-from typing import List
+from typing import List, Literal
 
 # --- CONFIGURAÇÕES ---
 TOKEN = os.getenv("DISCORD_TOKEN", "")
-# GUILD_ID e CHANNEL_ID foram removidos para o bot ser global
-
-# --- ARQUIVOS DE DADOS ---
 DB_FILE = "cursos_usuarios.db"
-LINKS_ENVIADOS_FILE = "links_enviados.txt"
+CourseType = Literal["free", "paid", "all"]
+
+# --- LISTA DE SITES E CATEGORIAS (Internalizada) ---
+SITES_DE_BUSCA = {
+    "Udemy": {"url": "https://www.udemy.com/courses/search/?q={}&sort=relevance", "base": "https://www.udemy.com", "filter": "/course/", "type": "mixed"},
+    "Coursera": {"url": "https://www.coursera.org/search?query={}", "base": "https://www.coursera.org", "filter": "/learn/", "type": "mixed"},
+    "edX": {"url": "https://www.edx.org/search?q={}", "base": "https://www.edx.org", "filter": "/course/", "type": "mixed"},
+    "Digital Innovation One": {"url": "https://www.dio.me/browse?search={}", "base": "https://www.dio.me", "filter": "/curso/", "type": "free"},
+    "Fund. Bradesco Escola Virtual": {"url": "https://www.ev.org.br/catalogo-de-cursos?query={}", "base": "https://www.ev.org.br", "filter": "/curso/", "type": "free"},
+    "Udacity": {"url": "https://www.udacity.com/courses/all?search={}", "base": "https://www.udacity.com", "filter": "/course/", "type": "mixed"},
+    "Alison": {"url": "https://alison.com/courses?query={}&category=it", "base": "https://alison.com", "filter": "/course/", "type": "free"},
+    "Khan Academy": {"url": "https://www.khanacademy.org/search?page_search_query={}", "base": "https://www.khanacademy.org", "filter": "/x/", "type": "free"},
+    "freeCodeCamp": {"url": "https://www.freecodecamp.org/news/search?query={}", "base": "https://www.freecodecamp.org/news", "filter": "/", "type": "free"},
+    "Alura": {"url": "https://www.alura.com.br/busca?query={}", "base": "https://www.alura.com.br", "filter": "/curso/", "type": "paid"},
+    "DataCamp": {"url": "https://www.datacamp.com/search?q={}", "base": "https://www.datacamp.com", "filter": "/courses/", "type": "paid"},
+    "Pluralsight": {"url": "https://www.pluralsight.com/search?q={}", "base": "https://www.pluralsight.com", "filter": "/courses/", "type": "paid"},
+    "Class Central": {"url": "https://www.classcentral.com/search?q={}", "base": "https://www.classcentral.com", "filter": "/course/", "type": "mixed"},
+}
+SITES_PENTEST = {
+    "HackerSec": {"url": "https://hackersec.com/cursos-gratuitos/", "base": "https://hackersec.com", "filter": "/curso/", "type": "free"},
+    "Cybrary": {"url": "https://www.cybrary.it/catalog/all/", "base": "https://www.cybrary.it", "filter": "/course/", "type": "mixed"},
+    "Hack The Box Academy": {"url": "https://academy.hackthebox.com/catalogue", "base": "https://academy.hackthebox.com", "filter": "/module/", "type": "mixed"},
+}
+MAPA_CATEGORIAS = {
+    "programacao": (["programação", "python", "javascript", "java"], "💻 Cursos de Programação"),
+    "redes": (["redes de computadores", "ccna", "infraestrutura"], "🌐 Cursos de Redes"),
+    "cloud": (["aws", "azure", "google cloud"], "☁️ Cursos de Cloud"),
+    "seguranca": (["segurança da informação", "pentest", "hacking etico"], "🛡️ Cursos de Segurança"),
+    "dados": (["sql", "banco de dados", "nosql"], "🗄️ Cursos de Banco de Dados"),
+    "ciencia_dados": (["ciencia de dados", "machine learning", "ia"], "📊 Cursos de Ciência de Dados"),
+    "devops": (["devops", "docker", "kubernetes"], "⚙️ Cursos de DevOps"),
+}
 
 # --- CONFIGURAÇÃO DO BOT ---
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# --- BANCO DE DADOS (Sem alterações) ---
-def iniciar_banco_de_dados():
-    conexao = sqlite3.connect(DB_FILE)
-    cursor = conexao.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS inscricoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-            course_title TEXT NOT NULL, course_url TEXT NOT NULL,
-            UNIQUE(user_id, course_url)
-        )
-    ''')
-    conexao.commit()
-    conexao.close()
+# --- WEB SCRAPING OTIMIZADO (Async) ---
+async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str:
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    try:
+        async with session.get(url, headers=headers, timeout=15) as response:
+            response.raise_for_status()
+            return await response.text()
+    except Exception:
+        return ""
 
-# --- VIEW COM BOTÃO (Sem alterações) ---
+def _parse_courses(html: str, base_url: str, filter_keyword: str) -> List[tuple[str, str]]:
+    cursos = []
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a['href']
+        if filter_keyword in href:
+            link = href if href.startswith("http") else urllib.parse.urljoin(base_url, href)
+            title = a.get_text(strip=True) or (a.find('img') and a.find('img').get('alt', '').strip())
+            if not title or len(title) < 5:
+                title = link.split('/')[-1].split('?')[0].replace('-', ' ').replace('_', ' ').title()
+            if title:
+                cursos.append((title.strip(), link))
+    return list(dict.fromkeys(cursos))
+
+async def _scrape_site(session: aiohttp.ClientSession, url_template: str, base_url: str, filter_keyword: str) -> List[tuple[str, str]]:
+    html = await _fetch_page(session, url_template)
+    if html:
+        return _parse_courses(html, base_url, filter_keyword)
+    return []
+
+async def pesquisar_cursos_online(termo: str, course_type: CourseType = "all") -> List[tuple[str, str]]:
+    termo_formatado = urllib.parse.quote_plus(termo)
+    sites_filtrados = {
+        name: data for name, data in SITES_DE_BUSCA.items()
+        if course_type == "all" or data['type'] == course_type or data['type'] == 'mixed'
+    }
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            _scrape_site(session, data['url'].format(termo_formatado), data['base'], data['filter'])
+            for data in sites_filtrados.values()
+        ]
+        resultados_por_site = await asyncio.gather(*tasks)
+    return [curso for sublist in resultados_por_site for curso in sublist]
+
+async def pesquisar_cursos_pentest(course_type: CourseType = "all") -> List[tuple[str, str]]:
+    sites_filtrados = {
+        name: data for name, data in SITES_PENTEST.items()
+        if course_type == "all" or data['type'] == course_type or data['type'] == 'mixed'
+    }
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            _scrape_site(session, data['url'].format(''), data['base'], data['filter'])
+            for data in sites_filtrados.values()
+        ]
+        resultados_por_site = await asyncio.gather(*tasks)
+    return [curso for sublist in resultados_por_site for curso in sublist]
+
+
+# --- BANCO DE DADOS ---
+def iniciar_banco_de_dados():
+    with sqlite3.connect(DB_FILE) as conexao:
+        cursor = conexao.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS inscricoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+                course_title TEXT NOT NULL, course_url TEXT NOT NULL,
+                UNIQUE(user_id, course_url)
+            )
+        ''')
+
+# --- COMPONENTES DE UI (VIEWS E BOTÕES) ---
 class CursoView(discord.ui.View):
     def __init__(self, course_title: str, course_url: str):
         super().__init__(timeout=None)
         self.course_title = course_title
         self.course_url = course_url
 
-    @discord.ui.button(label="✅ Salvar na minha lista", style=discord.ButtonStyle.success, custom_id="inscrever_button")
+    @discord.ui.button(label="✅ Salvar na minha lista", style=discord.ButtonStyle.success)
     async def inscrever_button_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         user_id = interaction.user.id
         try:
-            conexao = sqlite3.connect(DB_FILE)
-            cursor = conexao.cursor()
-            cursor.execute("INSERT INTO inscricoes (user_id, course_title, course_url) VALUES (?, ?, ?)",
-                           (user_id, self.course_title, self.course_url))
-            conexao.commit()
-            conexao.close()
-            await interaction.response.send_message(f"Você salvou o curso: '{self.course_title}'! Use `/meus_cursos` para ver sua lista.", ephemeral=True)
+            with sqlite3.connect(DB_FILE) as conexao:
+                cursor = conexao.cursor()
+                cursor.execute("INSERT INTO inscricoes (user_id, course_title, course_url) VALUES (?, ?, ?)",
+                               (user_id, self.course_title, self.course_url))
+            await interaction.response.send_message(f"Você salvou o curso: '{self.course_title}'!", ephemeral=True)
         except sqlite3.IntegrityError:
-            await interaction.response.send_message("Você já salvou este curso na sua lista!", ephemeral=True)
+            await interaction.response.send_message("Você já salvou este curso!", ephemeral=True)
         except Exception as e:
-            print(f"Erro no banco de dados: {e}")
-            await interaction.response.send_message("Ocorreu um erro ao tentar salvar o curso.", ephemeral=True)
+            await interaction.response.send_message("Ocorreu um erro ao salvar.", ephemeral=True)
 
-
-# --- COMPONENTES DO MENU DE SELEÇÃO (Sem alterações) ---
 class CategoriaSelect(discord.ui.Select):
-    def __init__(self):
+    def __init__(self, course_type: CourseType):
+        self.course_type = course_type
         options = [
-            discord.SelectOption(label="Programação", description="Python, Java, JavaScript, C#, etc.", emoji="💻", value="programacao"),
-            discord.SelectOption(label="Redes e Infraestrutura", description="Redes de Computadores, CCNA, Servidores.", emoji="🌐", value="redes"),
-            discord.SelectOption(label="Cloud Computing", description="AWS, Azure, Google Cloud.", emoji="☁️", value="cloud"),
-            discord.SelectOption(label="Segurança da Informação", description="Pentest, Hacking Ético, Segurança Ofensiva.", emoji="🛡️", value="seguranca"),
-            discord.SelectOption(label="Banco de Dados", description="SQL, NoSQL, Modelagem de Dados.", emoji="🗄️", value="dados"),
-            discord.SelectOption(label="Ciência de Dados", description="Machine Learning, Análise de Dados, IA.", emoji="📊", value="ciencia_dados"),
-            discord.SelectOption(label="DevOps", description="Integração Contínua, Docker, Kubernetes.", emoji="⚙️", value="devops"),
+            discord.SelectOption(label="Programação", emoji="💻", value="programacao"),
+            discord.SelectOption(label="Redes", emoji="🌐", value="redes"),
+            discord.SelectOption(label="Cloud", emoji="☁️", value="cloud"),
+            discord.SelectOption(label="Segurança", emoji="🛡️", value="seguranca"),
+            discord.SelectOption(label="Banco de Dados", emoji="🗄️", value="dados"),
+            discord.SelectOption(label="Ciência de Dados", emoji="📊", value="ciencia_dados"),
+            discord.SelectOption(label="DevOps", emoji="⚙️", value="devops"),
         ]
-        super().__init__(placeholder="Escolha uma área de TI para explorar...", min_values=1, max_values=1, options=options, custom_id="menu_selecao_categoria")
+        super().__init__(placeholder="Escolha uma área de TI para explorar...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True, ephemeral=True)
-        categoria_escolhida = self.values[0]
-        termos_de_busca: List[str] = []
-        titulo_embed = ""
-        # ... (lógica do callback permanece a mesma) ...
-        if categoria_escolhida == "programacao":
-            termos_de_busca = ["programação", "python", "javascript", "java"]
-            titulo_embed = "💻 Cursos de Programação"
-        elif categoria_escolhida == "redes":
-            termos_de_busca = ["redes de computadores", "ccna", "infraestrutura ti"]
-            titulo_embed = "🌐 Cursos de Redes e Infraestrutura"
-        elif categoria_escolhida == "cloud":
-            termos_de_busca = ["aws", "azure", "google cloud"]
-            titulo_embed = "☁️ Cursos de Cloud Computing"
-        elif categoria_escolhida == "seguranca":
-            resultados_especializados = pesquisar_cursos_pentest_especializados()
-            resultados_gerais = pesquisar_cursos_online("segurança da informação")
-            todos_resultados = resultados_especializados + resultados_gerais
-            titulo_embed = "🛡️ Cursos de Segurança da Informação"
-        elif categoria_escolhida == "dados":
-            termos_de_busca = ["sql", "banco de dados", "nosql"]
-            titulo_embed = "🗄️ Cursos de Banco de Dados"
-        elif categoria_escolhida == "ciencia_dados":
-            termos_de_busca = ["ciencia de dados", "machine learning", "inteligencia artificial"]
-            titulo_embed = "📊 Cursos de Ciência de Dados"
-        elif categoria_escolhida == "devops":
-            termos_de_busca = ["devops", "docker", "kubernetes", "ci/cd"]
-            titulo_embed = "⚙️ Cursos de DevOps"
-
-        if categoria_escolhida != "seguranca":
-            todos_resultados = []
-            for termo in termos_de_busca:
-                todos_resultados.extend(pesquisar_cursos_online(termo))
+        categoria_key = self.values[0]
+        termos_de_busca, titulo_header_base = MAPA_CATEGORIAS[categoria_key]
         
-        resultados_finais = list({curso[1]: curso for curso in todos_resultados}.values())
+        tipo_texto = "Pagos" if self.course_type == "paid" else "Gratuitos"
+        titulo_header = f"{titulo_header_base} ({tipo_texto})"
 
-        if not resultados_finais:
-            await interaction.followup.send(f"Nenhum curso encontrado para a categoria '{titulo_embed}'.", ephemeral=True)
-            return
+        tasks = []
+        if categoria_key == "seguranca":
+            tasks.append(pesquisar_cursos_pentest(course_type=self.course_type))
 
-        resultados_limitados = resultados_finais[:10]
-        lista_formatada = ""
-        for i, (titulo, url) in enumerate(resultados_limitados, 1):
-            titulo_curto = (titulo[:75] + '...') if len(titulo) > 75 else titulo
-            lista_formatada += f"{i}. **[{titulo_curto}]({url})**\n"
-        embed = discord.Embed(title=titulo_embed, description=lista_formatada, color=discord.Color.blue())
-        embed.set_footer(text=f"Mostrando {len(resultados_limitados)} de {len(resultados_finais)} resultados.")
-        await interaction.followup.send(embed=embed, ephemeral=True)
-        for titulo, url in resultados_limitados:
-            embed_curso = discord.Embed(title=titulo, url=url, description="Clique no botão abaixo para salvar este curso na sua lista pessoal.", color=discord.Color.blue())
-            view_curso = CursoView(course_title=titulo, course_url=url)
-            await interaction.followup.send(embed=embed_curso, view=view_curso, ephemeral=True)
+        for termo in termos_de_busca:
+            tasks.append(pesquisar_cursos_online(termo, course_type=self.course_type))
+
+        resultados_listas = await asyncio.gather(*tasks)
+        resultados_finais = list(dict.fromkeys([item for sublist in resultados_listas for item in sublist]))
+
+        await _enviar_resultados_para_discord(interaction, resultados_finais, titulo_header)
 
 class CategoriaTIView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, course_type: CourseType):
         super().__init__(timeout=None)
-        self.add_item(CategoriaSelect())
+        self.add_item(CategoriaSelect(course_type))
 
-# --- WEB SCRAPING E BUSCAS (Sem alterações) ---
-def pegar_cursos(url: str, base_url: str, filter_keyword: str):
-    cursos = []
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
-        r = requests.get(url, headers=headers, timeout=15)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-        for a in soup.find_all("a", href=True):
-            if filter_keyword in a['href']:
-                link = a['href']
-                if not link.startswith("http"):
-                    link = base_url + link
-                title = a.get_text(strip=True)
-                if not title:
-                    img_tag = a.find('img')
-                    if img_tag and img_tag.get('alt'):
-                        title = img_tag['alt']
-                if not title or len(title) < 5:
-                    title = link.split('/')[-1].split('?')[0].replace('-', ' ').replace('_', ' ').title()
-                cursos.append((title.strip(), link))
-        return list({curso[1]: curso for curso in cursos}.values())
-    except requests.RequestException as e:
-        print(f"Erro ao acessar {url}: {e}")
-        return []
-    except Exception as e:
-        print(f"Erro desconhecido ao processar {url}: {e}")
-        return []
+async def _enviar_resultados_para_discord(interaction: discord.Interaction, cursos: List, titulo_header: str):
+    if not cursos:
+        await interaction.followup.send(f"Nenhum curso encontrado para '{titulo_header}'.", ephemeral=True)
+        return
 
-sites_de_busca = {
-    "Udemy (Grátis)": ("https://www.udemy.com/courses/search/?price=price-free&q={}&sort=relevance", "https://www.udemy.com", "/course/"),
-    "Coursera": ("https://www.coursera.org/search?query={}", "https://www.coursera.org", "/learn/"),
-    "edX": ("https://www.edx.org/search?q={}", "https://www.edx.org", "/course/"),
-    "Digital Innovation One": ("https://www.dio.me/browse?search={}", "https://www.dio.me", "/curso/"),
-    "Fund. Bradesco Escola Virtual": ("https://www.ev.org.br/catalogo-de-cursos?query={}", "https://www.ev.org.br", "/curso/"),
-    "Udacity (Grátis)": ("https://www.udacity.com/courses/all?price=Free&search={}", "https://www.udacity.com", "/course/"),
-    "FutureLearn": ("https://www.futurelearn.com/search?q={}", "https://www.futurelearn.com", "/courses/"),
-    "Alison (TI)": ("https://alison.com/courses?query={}&category=it", "https://alison.com", "/course/"),
-}
+    resultados_limitados = cursos[:10]
+    lista_formatada = "\n".join(f"{i}. **[{c[0][:75]}]({c[1]})**" for i, c in enumerate(resultados_limitados, 1))
 
-def pesquisar_cursos_online(termo: str):
-    todos_cursos = []
-    termo_formatado = urllib.parse.quote_plus(termo)
-    for nome, (url_template, base, filtro) in sites_de_busca.items():
-        url_de_busca = url_template.format(termo_formatado)
-        print(f"Pesquisando '{termo}' em {nome}...")
-        cursos_encontrados = pegar_cursos(url_de_busca, base, filtro)
-        todos_cursos.extend(cursos_encontrados)
-    return list({curso[1]: curso for curso in todos_cursos}.values())
+    embed = discord.Embed(title=titulo_header, description=lista_formatada, color=discord.Color.blue())
+    embed.set_footer(text=f"Mostrando {len(resultados_limitados)} de {len(cursos)} resultados.")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
-sites_pentest = {
-    "HackerSec (Grátis)": ("https://hackersec.com/cursos-gratuitos/", "https://hackersec.com", "/curso/"),
-    "Cybrary (Free Courses)": ("https://www.cybrary.it/catalog/free/", "https://www.cybrary.it", "/course/"),
-}
-
-def pesquisar_cursos_pentest_especializados():
-    todos_cursos = []
-    for nome, (url_fixa, base, filtro) in sites_pentest.items():
-        cursos_encontrados = pegar_cursos(url_fixa, base, filtro)
-        todos_cursos.extend(cursos_encontrados)
-    return list({curso[1]: curso for curso in todos_cursos}.values())
+    for titulo, url in resultados_limitados:
+        embed_curso = discord.Embed(title=titulo, url=url, description="Clique abaixo para salvar este curso.", color=discord.Color.blue())
+        view_curso = CursoView(course_title=titulo, course_url=url)
+        await interaction.followup.send(embed=embed_curso, view=view_curso, ephemeral=True)
 
 # --- COMANDOS DO BOT ---
 @bot.event
 async def on_ready():
     print(f'Bot conectado como {bot.user}')
     iniciar_banco_de_dados()
-    bot.add_view(CursoView(course_title="", course_url="")) 
-    bot.add_view(CategoriaTIView())
+    bot.add_view(CursoView(course_title="", course_url=""))
     try:
         synced = await bot.tree.sync()
-        print(f"Sincronizados {len(synced)} comandos globalmente.")
+        print(f"Sincronizados {len(synced)} comandos.")
     except Exception as e:
         print(f"Erro ao sincronizar comandos: {e}")
 
-@bot.tree.command(name="explorar_ti", description="Navegue por categorias e encontre cursos de TI.")
-async def explorar_ti(interaction: discord.Interaction):
-    view = CategoriaTIView()
-    await interaction.response.send_message("Olá! Escolha uma área de TI abaixo para que eu possa encontrar os melhores cursos para você:", view=view, ephemeral=True)
+@bot.tree.command(name="cursos_gratuitos", description="Encontre cursos de TI em plataformas gratuitas.")
+async def cursos_gratuitos(interaction: discord.Interaction):
+    view = CategoriaTIView(course_type="free")
+    await interaction.response.send_message("Escolha uma área para explorar cursos gratuitos:", view=view, ephemeral=True)
 
-@bot.tree.command(name="pesquisar_cursos", description="Pesquisa por cursos de TI em diversas plataformas.")
-@app_commands.describe(termo="O que você quer aprender? (Ex: Python, AWS, Big Data, CCNA, Java)")
+@bot.tree.command(name="cursos_pagos", description="Encontre cursos de TI em plataformas pagas.")
+async def cursos_pagos(interaction: discord.Interaction):
+    view = CategoriaTIView(course_type="paid")
+    await interaction.response.send_message("Escolha uma área para explorar cursos pagos:", view=view, ephemeral=True)
+
+@bot.tree.command(name="pesquisar_cursos", description="Pesquisa por um termo em TODAS as plataformas.")
+@app_commands.describe(termo="O que você quer aprender?")
 async def pesquisar_cursos(interaction: discord.Interaction, termo: str):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    resultados = pesquisar_cursos_online(termo)
-    if not resultados:
-        await interaction.followup.send(f"Nenhum curso encontrado para o termo '{termo}'.", ephemeral=True)
-        return
-    resultados_limitados = resultados[:10]
-    lista_formatada = ""
-    for i, (titulo, url) in enumerate(resultados_limitados, 1):
-        titulo_curto = (titulo[:75] + '...') if len(titulo) > 75 else titulo
-        lista_formatada += f"{i}. **[{titulo_curto}]({url})**\n"
-    embed = discord.Embed(title=f"🔎 Resultados da Busca por '{termo}'", description=lista_formatada, color=discord.Color.orange())
-    embed.set_footer(text=f"Mostrando {len(resultados_limitados)} de {len(resultados)} resultados.")
-    await interaction.followup.send(embed=embed, ephemeral=True)
-    for titulo, url in resultados_limitados:
-        embed_curso = discord.Embed(title=titulo, url=url, description="Clique no botão abaixo para salvar este curso na sua lista pessoal.", color=discord.Color.blue())
-        view = CursoView(course_title=titulo, course_url=url)
-        await interaction.followup.send(embed=embed_curso, view=view, ephemeral=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    resultados = await pesquisar_cursos_online(termo, course_type="all")
+    await _enviar_resultados_para_discord(interaction, resultados, f"🔎 Resultados da Busca por '{termo}'")
 
-@bot.tree.command(name="cursos_pentest", description="Busca cursos de Pentest e Hacking Ético.")
-async def cursos_pentest(interaction: discord.Interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
-    resultados_especializados = pesquisar_cursos_pentest_especializados()
-    resultados_gerais = pesquisar_cursos_online("pentest")
-    resultados_hacking = pesquisar_cursos_online("ethical hacking")
-    todos_resultados = resultados_especializados + resultados_gerais + resultados_hacking
-    resultados_finais = list({curso[1]: curso for curso in todos_resultados}.values())
-    if not resultados_finais:
-        await interaction.followup.send("Nenhum curso de Pentest ou Hacking Ético foi encontrado.", ephemeral=True)
-        return
-    resultados_limitados = resultados_finais[:10]
-    lista_formatada = ""
-    for i, (titulo, url) in enumerate(resultados_limitados, 1):
-        titulo_curto = (titulo[:75] + '...') if len(titulo) > 75 else titulo
-        lista_formatada += f"{i}. **[{titulo_curto}]({url})**\n"
-    embed = discord.Embed(title="🛡️ Cursos de Pentest & Hacking Ético", description=lista_formatada, color=discord.Color.red())
-    embed.set_footer(text=f"Mostrando {len(resultados_limitados)} de {len(resultados_finais)} resultados.")
-    await interaction.followup.send(embed=embed, ephemeral=True)
-    for titulo, url in resultados_limitados:
-        embed_curso = discord.Embed(title=titulo, url=url, description="Clique no botão abaixo para salvar este curso na sua lista pessoal.", color=discord.Color.dark_red())
-        view = CursoView(course_title=titulo, course_url=url)
-        await interaction.followup.send(embed=embed_curso, view=view, ephemeral=True)
-
-# --- NOVO COMANDO DE AJUDA ---
-@bot.tree.command(name="ajuda", description="Exibe informações de ajuda sobre como usar o bot e seus comandos.")
+@bot.tree.command(name="ajuda", description="Exibe informações de ajuda sobre como usar o bot.")
 async def ajuda(interaction: discord.Interaction):
-    """Mostra uma mensagem de ajuda com todos os comandos disponíveis."""
-    
-    embed_ajuda = discord.Embed(
+    embed = discord.Embed(
         title="🤖 Ajuda do Bot de Cursos de TI",
-        description="Olá! Eu sou seu assistente para encontrar cursos de Tecnologia da Informação em diversas plataformas online.\n\nVeja abaixo como usar meus comandos:",
-        color=discord.Color.purple() # Uma cor diferente para destacar a ajuda
+        description="Eu sou seu assistente para encontrar cursos de TI. Veja como me usar:",
+        color=discord.Color.purple()
     )
-    
-    embed_ajuda.add_field(
-        name="`/explorar_ti`", 
-        value="Abre um menu interativo para você escolher uma área de TI (Programação, Redes, Cloud, etc.) e ver os cursos disponíveis.", 
-        inline=False
-    )
-    
-    embed_ajuda.add_field(
-        name="`/pesquisar_cursos [termo]`", 
-        value="Busca diretamente por um assunto específico. \n*Exemplo: `/pesquisar_cursos termo:Python`*", 
-        inline=False
-    )
-    
-    embed_ajuda.add_field(
-        name="`/cursos_pentest`", 
-        value="Realiza uma busca focada em cursos de Segurança da Informação, Pentest e Hacking Ético.", 
-        inline=False
-    )
-    
-    embed_ajuda.add_field(
-        name="`/meus_cursos`", 
-        value="Mostra a sua lista pessoal de cursos que você salvou usando o botão.", 
-        inline=False
-    )
-    
-    embed_ajuda.add_field(
-        name="✅ Botão 'Salvar na minha lista'", 
-        value="Este botão aparece abaixo de cada curso encontrado em uma busca. Clique nele para adicionar um curso à sua lista pessoal, que pode ser vista com `/meus_cursos`.", 
-        inline=False
-    )
-    
-    embed_ajuda.set_footer(text="Espero que ajude você a encontrar o curso perfeito!")
-    
-    await interaction.response.send_message(embed=embed_ajuda, ephemeral=True)
+    embed.add_field(name="`/cursos_gratuitos`", value="Abre um menu de categorias para buscar cursos gratuitos.", inline=False)
+    embed.add_field(name="`/cursos_pagos`", value="Abre um menu de categorias para buscar cursos pagos.", inline=False)
+    embed.add_field(name="`/pesquisar_cursos [termo]`", value="Busca por um assunto em TODAS as plataformas.\n*Exemplo: `/pesquisar_cursos termo:Python`*", inline=False)
+    embed.add_field(name="`/meus_cursos`", value="Mostra a sua lista de cursos salvos.", inline=False)
+    embed.set_footer(text="Espero que ajude você a encontrar o curso perfeito!")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
-
-@bot.tree.command(name="meus_cursos", description="Mostra todos os cursos que você salvou.")
+@bot.tree.command(name="meus_cursos", description="Mostra sua lista de cursos salvos.")
 async def meus_cursos(interaction: discord.Interaction):
-    user_id = interaction.user.id
-    conexao = sqlite3.connect(DB_FILE)
-    cursor = conexao.cursor()
-    cursor.execute("SELECT course_title, course_url FROM inscricoes WHERE user_id = ?", (user_id,))
-    cursos_do_usuario = cursor.fetchall()
-    conexao.close()
-    if not cursos_do_usuario:
-        await interaction.response.send_message("Você ainda não salvou nenhum curso.", ephemeral=True)
+    with sqlite3.connect(DB_FILE) as con:
+        cursos = con.execute("SELECT course_title, course_url FROM inscricoes WHERE user_id = ?", (interaction.user.id,)).fetchall()
+    if not cursos:
+        await interaction.response.send_message("Você não tem cursos salvos.", ephemeral=True)
         return
-    embed = discord.Embed(title=f"📚 Meus Cursos Salvos", description=f"Sua lista de cursos, {interaction.user.mention}.", color=discord.Color.green())
-    lista_formatada = ""
-    for i, (titulo, url) in enumerate(cursos_do_usuario[:25], 1):
-        titulo_curto = (titulo[:70] + '...') if len(titulo) > 70 else titulo
-        lista_formatada += f"{i}. **[{titulo_curto}]({url})**\n"
-    embed.add_field(name="Sua Lista:", value=lista_formatada, inline=False)
+    lista = "\n".join(f"{i}. **[{c[0][:70]}]({c[1]})**" for i, c in enumerate(cursos[:25], 1))
+    embed = discord.Embed(title="📚 Meus Cursos Salvos", description=lista, color=discord.Color.green())
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # --- INICIA O BOT ---
-if TOKEN == "": # Alterado para verificar se está vazio
-    print("ERRO CRÍTICO: Por favor, configure seu token do Discord em uma variável de ambiente chamada DISCORD_TOKEN!")
+if not TOKEN:
+    print("ERRO CRÍTICO: DISCORD_TOKEN não configurado!")
 else:
     bot.run(TOKEN)
