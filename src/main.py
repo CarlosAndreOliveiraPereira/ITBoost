@@ -36,6 +36,8 @@ def main():
     application.add_handler(CommandHandler("start", bot_handlers.start))
     application.add_handler(CommandHandler("ajuda", bot_handlers.ajuda))
     application.add_handler(CommandHandler("explorar_ti", bot_handlers.explorar_ti))
+    application.add_handler(CommandHandler("cursos_gratuitos", bot_handlers.cursos_gratuitos))
+    application.add_handler(CommandHandler("cursos_pagos", bot_handlers.cursos_pagos))
     application.add_handler(CommandHandler("pesquisar_cursos", bot_handlers.pesquisar_cursos))
     application.add_handler(CommandHandler("cursos_pentest", bot_handlers.cursos_pentest))
     application.add_handler(CommandHandler("meus_cursos", bot_handlers.meus_cursos))

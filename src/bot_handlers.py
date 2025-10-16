@@ -67,11 +67,15 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler para o comando /ajuda."""
     texto_ajuda = (
         "🤖 *Ajuda do Bot de Cursos de TI*\n\n"
-        "Use os comandos abaixo para encontrar cursos:\n\n"
+        "Aqui estão os comandos que você pode usar:\n\n"
         "*/explorar_ti*\n"
-        "Navegue por categorias \\(Programação, Redes, etc\\.\\) para ver cursos\\.\n\n"
+        "Inicia uma navegação guiada, perguntando se você quer cursos pagos ou gratuitos antes de mostrar as categorias\\.\n\n"
+        "*/cursos_gratuitos*\n"
+        "Mostra diretamente as categorias de TI para busca em sites gratuitos ou com opções gratuitas\\.\n\n"
+        "*/cursos_pagos*\n"
+        "Mostra diretamente as categorias de TI para busca em sites pagos\\.\n\n"
         "*/pesquisar_cursos* `termo`\n"
-        "Busca por um assunto específico\\.\n"
+        "Busca por um assunto específico em *todas* as plataformas \\(pagas e gratuitas\\)\\.\n"
         "\\_Exemplo:_ `/pesquisar_cursos Python`\n\n"
         "*/cursos_pentest*\n"
         "Busca focada em Segurança da Informação e Pentest\\.\n\n"
@@ -93,6 +97,34 @@ async def explorar_ti(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Ótima escolha! Para começar, você prefere explorar cursos pagos ou gratuitos?",
         reply_markup=reply_markup
     )
+
+async def _show_category_menu(update_or_query, course_type: str):
+    """Função auxiliar que mostra o menu de categorias de TI."""
+    keyboard = [
+        [InlineKeyboardButton("💻 Programação", callback_data=f'cat_{course_type}_programacao'), InlineKeyboardButton("🌐 Redes", callback_data=f'cat_{course_type}_redes')],
+        [InlineKeyboardButton("☁️ Cloud", callback_data=f'cat_{course_type}_cloud'), InlineKeyboardButton("🛡️ Segurança", callback_data=f'cat_{course_type}_seguranca')],
+        [InlineKeyboardButton("🗄️ Banco de Dados", callback_data=f'cat_{course_type}_dados'), InlineKeyboardButton("📊 Ciência de Dados", callback_data=f'cat_{course_type}_ciencia_dados')],
+        [InlineKeyboardButton("⚙️ DevOps", callback_data=f'cat_{course_type}_devops')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    tipo_texto = "Pagos" if course_type == "paid" else "Gratuitos"
+    message_text = f"Excelente! Escolha uma categoria de TI para ver os melhores cursos *{tipo_texto}*:"
+
+    if hasattr(update_or_query, 'message') and update_or_query.message:
+        # Chamado por um comando
+        await update_or_query.message.reply_text(message_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+    else:
+        # Chamado por um callback de botão
+        await update_or_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN_V2)
+
+async def cursos_gratuitos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para o comando de atalho /cursos_gratuitos."""
+    await _show_category_menu(update, 'free')
+
+async def cursos_pagos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para o comando de atalho /cursos_pagos."""
+    await _show_category_menu(update, 'paid')
 
 async def pesquisar_cursos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler para o comando /pesquisar_cursos."""
@@ -164,21 +196,7 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 async def _handle_type_callback(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     """Lida com a escolha do tipo de curso (pago/gratuito) e mostra as categorias."""
     course_type = query.data.split("_", 1)[1]  # 'paid' or 'free'
-
-    keyboard = [
-        [InlineKeyboardButton("💻 Programação", callback_data=f'cat_{course_type}_programacao'), InlineKeyboardButton("🌐 Redes", callback_data=f'cat_{course_type}_redes')],
-        [InlineKeyboardButton("☁️ Cloud", callback_data=f'cat_{course_type}_cloud'), InlineKeyboardButton("🛡️ Segurança", callback_data=f'cat_{course_type}_seguranca')],
-        [InlineKeyboardButton("🗄️ Banco de Dados", callback_data=f'cat_{course_type}_dados'), InlineKeyboardButton("📊 Ciência de Dados", callback_data=f'cat_{course_type}_ciencia_dados')],
-        [InlineKeyboardButton("⚙️ DevOps", callback_data=f'cat_{course_type}_devops')],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    tipo_texto = "Pagos" if course_type == "paid" else "Gratuitos"
-    await query.edit_message_text(
-        f"Excelente! Agora, escolha uma categoria de TI para ver os melhores cursos *{tipo_texto}*:",
-        reply_markup=reply_markup,
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+    await _show_category_menu(query, course_type)
 
 async def _handle_save_callback(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     """Lida com o clique no botão 'Salvar'."""
@@ -230,11 +248,13 @@ async def post_init(application: Application):
     """Define a lista de comandos do bot no Telegram após a inicialização."""
     commands = [
         BotCommand("start", "Inicia a conversa com o bot"),
-        BotCommand("explorar_ti", "Navegue por categorias de cursos"),
-        BotCommand("pesquisar_cursos", "Pesquise por um curso específico"),
-        BotCommand("cursos_pentest", "Encontre cursos de segurança e pentest"),
-        BotCommand("meus_cursos", "Veja sua lista de cursos salvos"),
-        BotCommand("ajuda", "Mostra a mensagem de ajuda"),
+        BotCommand("explorar_ti", "Navegue por tipo e categoria de curso"),
+        BotCommand("cursos_gratuitos", "Busca somente cursos gratuitos"),
+        BotCommand("cursos_pagos", "Busca somente cursos pagos"),
+        BotCommand("pesquisar_cursos", "Pesquisa por um assunto específico"),
+        BotCommand("cursos_pentest", "Encontra cursos de segurança e pentest"),
+        BotCommand("meus_cursos", "Mostra sua lista de cursos salvos"),
+        BotCommand("ajuda", "Mostra esta mensagem de ajuda"),
     ]
     await application.bot.set_my_commands(commands)
     logger.info("Lista de comandos configurada no Telegram.")
