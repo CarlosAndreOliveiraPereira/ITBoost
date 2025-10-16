@@ -81,15 +81,18 @@ async def ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_markdown_v2(texto_ajuda)
 
 async def explorar_ti(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler para o comando /explorar_ti, mostra um menu de categorias."""
+    """Handler para o comando /explorar_ti. Pergunta ao usuário o tipo de curso desejado."""
     keyboard = [
-        [InlineKeyboardButton("💻 Programação", callback_data='cat_programacao'), InlineKeyboardButton("🌐 Redes e Infra", callback_data='cat_redes')],
-        [InlineKeyboardButton("☁️ Cloud", callback_data='cat_cloud'), InlineKeyboardButton("🛡️ Segurança", callback_data='cat_seguranca')],
-        [InlineKeyboardButton("🗄️ Banco de Dados", callback_data='cat_dados'), InlineKeyboardButton("📊 Ciência de Dados", callback_data='cat_ciencia_dados')],
-        [InlineKeyboardButton("⚙️ DevOps", callback_data='cat_devops')],
+        [
+            InlineKeyboardButton("💰 Cursos Pagos", callback_data='type_paid'),
+            InlineKeyboardButton("🆓 Cursos Gratuitos", callback_data='type_free'),
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Escolha uma área de TI para explorar:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "Ótima escolha! Para começar, você prefere explorar cursos pagos ou gratuitos?",
+        reply_markup=reply_markup
+    )
 
 async def pesquisar_cursos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler para o comando /pesquisar_cursos."""
@@ -98,27 +101,33 @@ async def pesquisar_cursos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Por favor, diga o que você quer aprender.\nExemplo: `/pesquisar_cursos Python`")
         return
 
-    await update.message.reply_text(f"Buscando cursos sobre '{termo_busca}', isso pode levar um momento...")
-    resultados = await scraper.pesquisar_cursos_online(termo_busca)
+    await update.message.reply_text(f"Buscando em todas as plataformas por '{termo_busca}', isso pode levar um momento...")
+    # A busca direta pesquisa em todos os tipos de curso (gratuitos e pagos)
+    resultados = await scraper.pesquisar_cursos_online(termo_busca, course_type="all")
     await enviar_resultados_cursos(update, context, resultados, termo_busca)
 
-async def cursos_pentest(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler para o comando /cursos_pentest."""
-    await update.message.reply_text("Buscando cursos de Pentest e Hacking Ético, aguarde...")
+async def cursos_pentest(update: Update, context: ContextTypes.DEFAULT_TYPE, course_type: scraper.CourseType = "all"):
+    """Handler para o comando /cursos_pentest, agora com filtro de tipo."""
+    if isinstance(update, Update): # Se for chamado por um comando, não um botão
+        await update.message.reply_text("Buscando cursos de Pentest e Hacking Ético, aguarde...")
 
-    # Realiza as buscas em paralelo
+    tipo_texto = "Pagos" if course_type == "paid" else "Gratuitos"
+    if course_type == 'all':
+        titulo_header = "Pentest & Hacking Ético"
+    else:
+        titulo_header = f"Pentest & Hacking Ético ({tipo_texto})"
+
     tasks = [
-        scraper.pesquisar_cursos_pentest_especializados(),
-        scraper.pesquisar_cursos_online("pentest"),
-        scraper.pesquisar_cursos_online("ethical hacking")
+        scraper.pesquisar_cursos_pentest_especializados(course_type=course_type),
+        scraper.pesquisar_cursos_online("pentest", course_type=course_type),
+        scraper.pesquisar_cursos_online("ethical hacking", course_type=course_type)
     ]
     resultados_listas = await asyncio.gather(*tasks)
 
-    # Junta e remove duplicatas
     todos_resultados = [curso for lista in resultados_listas for curso in lista]
     resultados_unicos = list(dict.fromkeys(todos_resultados))
 
-    await enviar_resultados_cursos(update, context, resultados_unicos, "Pentest & Hacking Ético")
+    await enviar_resultados_cursos(update, context, resultados_unicos, titulo_header)
 
 async def meus_cursos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler para o comando /meus_cursos."""
@@ -147,8 +156,29 @@ async def button_callback_handler(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("save:"):
         await _handle_save_callback(query, context)
+    elif data.startswith("type_"):
+        await _handle_type_callback(query, context)
     elif data.startswith("cat_"):
         await _handle_category_callback(query, context)
+
+async def _handle_type_callback(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
+    """Lida com a escolha do tipo de curso (pago/gratuito) e mostra as categorias."""
+    course_type = query.data.split("_", 1)[1]  # 'paid' or 'free'
+
+    keyboard = [
+        [InlineKeyboardButton("💻 Programação", callback_data=f'cat_{course_type}_programacao'), InlineKeyboardButton("🌐 Redes", callback_data=f'cat_{course_type}_redes')],
+        [InlineKeyboardButton("☁️ Cloud", callback_data=f'cat_{course_type}_cloud'), InlineKeyboardButton("🛡️ Segurança", callback_data=f'cat_{course_type}_seguranca')],
+        [InlineKeyboardButton("🗄️ Banco de Dados", callback_data=f'cat_{course_type}_dados'), InlineKeyboardButton("📊 Ciência de Dados", callback_data=f'cat_{course_type}_ciencia_dados')],
+        [InlineKeyboardButton("⚙️ DevOps", callback_data=f'cat_{course_type}_devops')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    tipo_texto = "Pagos" if course_type == "paid" else "Gratuitos"
+    await query.edit_message_text(
+        f"Excelente! Agora, escolha uma categoria de TI para ver os melhores cursos *{tipo_texto}*:",
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
 
 async def _handle_save_callback(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
     """Lida com o clique no botão 'Salvar'."""
@@ -168,26 +198,31 @@ async def _handle_save_callback(query: Update.callback_query, context: ContextTy
         await context.bot.answer_callback_query(callback_query_id=query.id, text="Você já salvou este curso!", show_alert=True)
 
 async def _handle_category_callback(query: Update.callback_query, context: ContextTypes.DEFAULT_TYPE):
-    """Lida com o clique em um botão de categoria."""
-    categoria_key = query.data.split("_", 1)[1]
+    """Lida com o clique em um botão de categoria, agora com tipo de curso."""
+    # O formato do data é "cat_{course_type}_{category_key}"
+    _, course_type, category_key = query.data.split("_", 2)
 
     # Caso especial para segurança
-    if categoria_key == "seguranca":
+    if category_key == "seguranca":
         await query.edit_message_text(text="Buscando cursos de Segurança, por favor aguarde...")
-        await cursos_pentest(query, context) # Reutiliza o handler de pentest
+        # Passa o tipo de curso para a função de pentest
+        await cursos_pentest(query, context, course_type=course_type)
         return
 
-    if categoria_key in MAPA_CATEGORIAS:
-        termos, titulo_header = MAPA_CATEGORIAS[categoria_key]
-        await query.edit_message_text(text=f"Buscando cursos em '{titulo_header}', aguarde...")
+    if category_key in MAPA_CATEGORIAS:
+        termos, titulo_header = MAPA_CATEGORIAS[category_key]
+        tipo_texto = "Pagos" if course_type == "paid" else "Gratuitos"
+        titulo_completo = f"{titulo_header} ({tipo_texto})"
 
-        tasks = [scraper.pesquisar_cursos_online(termo) for termo in termos]
+        await query.edit_message_text(text=f"Buscando em '{titulo_completo}', aguarde...")
+
+        tasks = [scraper.pesquisar_cursos_online(termo, course_type=course_type) for termo in termos]
         resultados_listas = await asyncio.gather(*tasks)
 
         todos_resultados = [curso for lista in resultados_listas for curso in lista]
         resultados_unicos = list(dict.fromkeys(todos_resultados))
 
-        await enviar_resultados_cursos(query, context, resultados_unicos, titulo_header)
+        await enviar_resultados_cursos(query, context, resultados_unicos, titulo_completo)
 
 # --- CONFIGURAÇÃO DE COMANDOS ---
 

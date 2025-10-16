@@ -5,12 +5,14 @@ import aiohttp
 from bs4 import BeautifulSoup
 import urllib.parse
 import logging
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Literal
 
 from .config import SITES_DE_BUSCA, SITES_PENTEST
 
 # Configuração do logger
 logger = logging.getLogger(__name__)
+
+CourseType = Literal["free", "paid", "all"]
 
 async def _fetch_page(session: aiohttp.ClientSession, url: str) -> str:
     """Função auxiliar para buscar o conteúdo de uma página de forma assíncrona."""
@@ -36,59 +38,74 @@ def _parse_courses(html: str, base_url: str, filter_keyword: str) -> List[Tuple[
         if filter_keyword in href:
             link = href if href.startswith("http") else urllib.parse.urljoin(base_url, href)
 
-            # Tenta extrair o título de várias formas
-            title = a.get_text(strip=True)
-            if not title:
-                img = a.find('img')
-                if img and img.get('alt'):
-                    title = img['alt'].strip()
+            title = a.get_text(strip=True) or (a.find('img') and a.find('img').get('alt', '').strip())
 
-            # Se ainda não houver título, cria um a partir do link
             if not title or len(title) < 5:
                 title = link.split('/')[-1].split('?')[0].replace('-', ' ').replace('_', ' ').title()
 
             if title:
-                cursos.append((title, link))
+                cursos.append((title.strip(), link))
 
-    return list(dict.fromkeys(cursos)) # Remove duplicatas mantendo a ordem
+    return list(dict.fromkeys(cursos))
 
-async def _scrape_site(session: aiohttp.ClientSession, url: str, base_url: str, filter_keyword: str) -> List[Tuple[str, str]]:
+async def _scrape_site(session: aiohttp.ClientSession, url_template: str, base_url: str, filter_keyword: str) -> List[Tuple[str, str]]:
     """Coordena a busca e o parsing para um único site."""
-    html = await _fetch_page(session, url)
+    html = await _fetch_page(session, url_template)
     if html:
         return _parse_courses(html, base_url, filter_keyword)
     return []
 
-async def pesquisar_cursos_online(termo: str) -> List[Tuple[str, str]]:
+async def pesquisar_cursos_online(termo: str, course_type: CourseType = "all") -> List[Tuple[str, str]]:
     """
-    Pesquisa cursos em múltiplos sites de forma assíncrona.
+    Pesquisa cursos em múltiplos sites de forma assíncrona, filtrando por tipo.
     """
     termo_formatado = urllib.parse.quote_plus(termo)
+
+    sites_filtrados = {}
+    if course_type == "all":
+        sites_filtrados = SITES_DE_BUSCA
+    else:
+        sites_filtrados = {
+            name: data for name, data in SITES_DE_BUSCA.items()
+            if data['type'] == course_type or data['type'] == 'mixed'
+        }
+
     async with aiohttp.ClientSession() as session:
         tasks = []
-        for nome, (url_template, base, filtro) in SITES_DE_BUSCA.items():
-            url_de_busca = url_template.format(termo_formatado)
-            tasks.append(_scrape_site(session, url_de_busca, base, filtro))
-            logger.info(f"Iniciando busca por '{termo}' em {nome}.")
+        for nome, data in sites_filtrados.items():
+            url_de_busca = data['url'].format(termo_formatado)
+            tasks.append(_scrape_site(session, url_de_busca, data['base'], data['filter']))
+            logger.info(f"Iniciando busca por '{termo}' em {nome} (tipo: {course_type}).")
 
         resultados_por_site = await asyncio.gather(*tasks)
 
     todos_cursos = [curso for sublist in resultados_por_site for curso in sublist]
-    logger.info(f"Busca por '{termo}' concluída. Total de {len(todos_cursos)} resultados brutos encontrados.")
+    logger.info(f"Busca por '{termo}' ({course_type}) concluída. Total de {len(todos_cursos)} resultados brutos.")
     return list(dict.fromkeys(todos_cursos))
 
-async def pesquisar_cursos_pentest_especializados() -> List[Tuple[str, str]]:
+async def pesquisar_cursos_pentest_especializados(course_type: CourseType = "all") -> List[Tuple[str, str]]:
     """
-    Pesquisa cursos em sites especializados em Pentest de forma assíncrona.
+    Pesquisa cursos em sites de Pentest, filtrando por tipo.
     """
+    sites_filtrados = {}
+    if course_type == "all":
+        sites_filtrados = SITES_PENTEST
+    else:
+        sites_filtrados = {
+            name: data for name, data in SITES_PENTEST.items()
+            if data['type'] == course_type or data['type'] == 'mixed'
+        }
+
     async with aiohttp.ClientSession() as session:
         tasks = []
-        for nome, (url_fixa, base, filtro) in SITES_PENTEST.items():
-            tasks.append(_scrape_site(session, url_fixa, base, filtro))
-            logger.info(f"Iniciando busca em site especializado: {nome}.")
+        for nome, data in sites_filtrados.items():
+            # Alguns sites especializados não têm termo de busca, a URL é fixa
+            url_de_busca = data['url'].format('')
+            tasks.append(_scrape_site(session, url_de_busca, data['base'], data['filter']))
+            logger.info(f"Iniciando busca em site especializado: {nome} (tipo: {course_type}).")
 
         resultados_por_site = await asyncio.gather(*tasks)
 
     todos_cursos = [curso for sublist in resultados_por_site for curso in sublist]
-    logger.info(f"Busca em sites de Pentest concluída. Total de {len(todos_cursos)} resultados brutos.")
+    logger.info(f"Busca em sites de Pentest ({course_type}) concluída. Total de {len(todos_cursos)} resultados brutos.")
     return list(dict.fromkeys(todos_cursos))
